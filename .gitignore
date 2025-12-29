@@ -7,7 +7,7 @@ claude-flow/
 hive-mind-prompt-*.txt
 
 # Claude Flow generated files
-.flows/
+.flows
 .claude/settings.local.json
 .mcp.json
 claude-flow.config.json
