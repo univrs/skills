@@ -84,7 +84,7 @@ impl TransferId {
 // ============================================================================
 
 /// Gradient payload optimized for network transmission
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct GradientPayload {
     pub cpu_available: f64,
     pub memory_available: f64,

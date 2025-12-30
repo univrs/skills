@@ -823,4 +823,742 @@ mod tests {
             SeptalGateState::Closed
         );
     }
+
+    // ========================================================================
+    // Message Handler Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_handle_gradient_message() {
+        let local_id = test_node_id();
+        let config = EnrBridgeConfig::default();
+        let bridge = EnrBridge::new(local_id, config);
+
+        let sender = NodeId::from_bytes([2u8; 32]);
+        let gradient = GradientMessage {
+            node_id: sender,
+            gradient: GradientPayload {
+                cpu_available: 0.75,
+                memory_available: 0.50,
+                gpu_available: 0.0,
+                storage_available: 0.80,
+                bandwidth_available: 0.90,
+                credit_balance: 500.0,
+            },
+            timestamp: Timestamp::now(),
+            signature: Signature::empty(),
+        };
+
+        // Handle the message
+        bridge.handle_gradient_message(gradient).await.unwrap();
+
+        // Verify gradient was stored
+        let gradients = bridge.gradients.read().await;
+        let stored = gradients.get(&sender).unwrap();
+        assert!((stored.cpu_available - 0.75).abs() < 0.001);
+        assert!((stored.memory_available - 0.50).abs() < 0.001);
+    }
+
+    #[tokio::test]
+    async fn test_handle_gradient_from_isolated_node() {
+        let local_id = test_node_id();
+        let config = EnrBridgeConfig::default();
+        let bridge = EnrBridge::new(local_id, config);
+
+        let isolated_node = NodeId::from_bytes([2u8; 32]);
+
+        // Isolate the node first
+        for _ in 0..5 {
+            bridge.record_failure(isolated_node, "test").await;
+        }
+        assert!(bridge.is_isolated(&isolated_node).await);
+
+        // Try to handle gradient from isolated node
+        let gradient = GradientMessage {
+            node_id: isolated_node,
+            gradient: GradientPayload::from(&ResourceGradient::default()),
+            timestamp: Timestamp::now(),
+            signature: Signature::empty(),
+        };
+
+        bridge.handle_gradient_message(gradient).await.unwrap();
+
+        // Gradient should NOT be stored (node is isolated)
+        let gradients = bridge.gradients.read().await;
+        assert!(gradients.get(&isolated_node).is_none());
+    }
+
+    #[tokio::test]
+    async fn test_handle_credit_transfer_as_recipient() {
+        let local_id = test_node_id();
+        let config = EnrBridgeConfig::default();
+        let mut bridge = EnrBridge::new(local_id, config);
+
+        // Connect publisher for confirmation
+        let publish_fn: PublishFn = Arc::new(|_topic, _data| Ok(()));
+        bridge.connect_publisher(publish_fn);
+
+        let sender = NodeId::from_bytes([2u8; 32]);
+        let transfer = CreditTransfer {
+            id: TransferId::from_transfer(&sender, &local_id, 100, 12345),
+            from: sender,
+            to: local_id, // We are the recipient
+            amount: 100,
+            nonce: 12345,
+            timestamp: Timestamp::now(),
+            memo: Some("test payment".to_string()),
+            signature: Signature::empty(),
+        };
+
+        // Initial balance is 0
+        assert_eq!(bridge.balance().await, Credits::zero());
+
+        // Handle incoming transfer
+        bridge
+            .handle_credit_message(CreditMessage::Transfer(transfer))
+            .await
+            .unwrap();
+
+        // Balance should be credited
+        assert_eq!(bridge.balance().await, Credits::new(100));
+    }
+
+    #[tokio::test]
+    async fn test_handle_credit_transfer_as_observer() {
+        let local_id = test_node_id();
+        let config = EnrBridgeConfig::default();
+        let bridge = EnrBridge::new(local_id, config);
+
+        let sender = NodeId::from_bytes([2u8; 32]);
+        let recipient = NodeId::from_bytes([3u8; 32]);
+
+        // Pre-populate known balances
+        {
+            let mut balances = bridge.known_balances.write().await;
+            balances.insert(sender, Credits::new(1000));
+            balances.insert(recipient, Credits::new(500));
+        }
+
+        let transfer = CreditTransfer {
+            id: TransferId::from_transfer(&sender, &recipient, 200, 12345),
+            from: sender,
+            to: recipient, // Someone else is the recipient
+            amount: 200,
+            nonce: 12345,
+            timestamp: Timestamp::now(),
+            memo: None,
+            signature: Signature::empty(),
+        };
+
+        // Handle transfer as observer
+        bridge
+            .handle_credit_message(CreditMessage::Transfer(transfer))
+            .await
+            .unwrap();
+
+        // Our balance unchanged
+        assert_eq!(bridge.balance().await, Credits::zero());
+
+        // Known balances should be updated
+        let balances = bridge.known_balances.read().await;
+        assert_eq!(balances.get(&sender), Some(&Credits::new(800)));
+        assert_eq!(balances.get(&recipient), Some(&Credits::new(700)));
+    }
+
+    #[tokio::test]
+    async fn test_handle_credit_confirmation() {
+        let local_id = test_node_id();
+        let config = EnrBridgeConfig::default();
+        let mut bridge = EnrBridge::new(local_id, config);
+
+        let publish_fn: PublishFn = Arc::new(|_topic, _data| Ok(()));
+        bridge.connect_publisher(publish_fn);
+        bridge.set_balance(Credits::new(1000)).await;
+
+        let recipient = NodeId::from_bytes([2u8; 32]);
+
+        // Make a transfer (creates pending entry)
+        let transfer_id = bridge.transfer(recipient, Credits::new(100)).await.unwrap();
+
+        // Verify pending transfer exists
+        {
+            let pending = bridge.pending_transfers.read().await;
+            assert!(pending.contains_key(&transfer_id));
+        }
+
+        // Handle confirmation
+        let confirmation = TransferConfirmation {
+            transfer_id,
+            confirmer: recipient,
+            timestamp: Timestamp::now(),
+            signature: Signature::empty(),
+        };
+
+        bridge
+            .handle_credit_message(CreditMessage::Confirmation(confirmation))
+            .await
+            .unwrap();
+
+        // Pending transfer should be removed
+        let pending = bridge.pending_transfers.read().await;
+        assert!(!pending.contains_key(&transfer_id));
+    }
+
+    #[tokio::test]
+    async fn test_handle_credit_state_sync() {
+        let local_id = test_node_id();
+        let config = EnrBridgeConfig::default();
+        let bridge = EnrBridge::new(local_id, config);
+
+        let other_node = NodeId::from_bytes([2u8; 32]);
+
+        let sync = CreditStateSync {
+            node_id: other_node,
+            balance: 5000,
+            version: 1,
+            timestamp: Timestamp::now(),
+            signature: Signature::empty(),
+        };
+
+        bridge
+            .handle_credit_message(CreditMessage::StateSync(sync))
+            .await
+            .unwrap();
+
+        let balances = bridge.known_balances.read().await;
+        assert_eq!(balances.get(&other_node), Some(&Credits::new(5000)));
+    }
+
+    #[tokio::test]
+    async fn test_handle_balance_query() {
+        let local_id = test_node_id();
+        let config = EnrBridgeConfig::default();
+        let mut bridge = EnrBridge::new(local_id, config);
+
+        let published = Arc::new(std::sync::Mutex::new(Vec::<(String, Vec<u8>)>::new()));
+        let published_clone = published.clone();
+        let publish_fn: PublishFn = Arc::new(move |topic, data| {
+            let mut msgs = published_clone.lock().unwrap();
+            msgs.push((topic.to_string(), data));
+            Ok(())
+        });
+        bridge.connect_publisher(publish_fn);
+        bridge.set_balance(Credits::new(1234)).await;
+
+        let requester = NodeId::from_bytes([2u8; 32]);
+
+        // Query for our balance
+        bridge
+            .handle_credit_message(CreditMessage::BalanceQuery {
+                requester,
+                target: local_id,
+            })
+            .await
+            .unwrap();
+
+        // Should have published a response
+        let msgs = published.lock().unwrap();
+        assert!(!msgs.is_empty());
+        assert_eq!(msgs[0].0, EnrTopics::CREDIT);
+    }
+
+    #[tokio::test]
+    async fn test_handle_balance_response() {
+        let local_id = test_node_id();
+        let config = EnrBridgeConfig::default();
+        let bridge = EnrBridge::new(local_id, config);
+
+        let other_node = NodeId::from_bytes([2u8; 32]);
+
+        bridge
+            .handle_credit_message(CreditMessage::BalanceResponse {
+                node_id: other_node,
+                balance: 9999,
+            })
+            .await
+            .unwrap();
+
+        let balances = bridge.known_balances.read().await;
+        assert_eq!(balances.get(&other_node), Some(&Credits::new(9999)));
+    }
+
+    // ========================================================================
+    // Septal Message Handler Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_handle_failure_report() {
+        let local_id = test_node_id();
+        let config = EnrBridgeConfig::default();
+        let bridge = EnrBridge::new(local_id, config);
+
+        let failing_node = NodeId::from_bytes([2u8; 32]);
+        let reporter = NodeId::from_bytes([3u8; 32]);
+
+        // Report 5 failures to trip the gate
+        for _ in 0..5 {
+            let report = FailureReport {
+                reporter,
+                failed_node: failing_node,
+                failure_type: "timeout".to_string(),
+                timestamp: Timestamp::now(),
+                signature: Signature::empty(),
+            };
+
+            bridge
+                .handle_septal_message(SeptalMessage::FailureReport(report))
+                .await
+                .unwrap();
+        }
+
+        // Node should be isolated
+        assert!(bridge.is_isolated(&failing_node).await);
+    }
+
+    #[tokio::test]
+    async fn test_handle_isolation_notice() {
+        let local_id = test_node_id();
+        let config = EnrBridgeConfig::default();
+        let bridge = EnrBridge::new(local_id, config);
+
+        let bad_node = NodeId::from_bytes([2u8; 32]);
+
+        let notice = IsolationNotice {
+            isolated_node: bad_node,
+            reason: "Byzantine behavior detected".to_string(),
+            timestamp: Timestamp::now(),
+        };
+
+        bridge
+            .handle_septal_message(SeptalMessage::Isolation(notice))
+            .await
+            .unwrap();
+
+        // Node should be immediately isolated
+        assert!(bridge.is_isolated(&bad_node).await);
+        assert_eq!(bridge.gate_state(&bad_node).await, SeptalGateState::Closed);
+    }
+
+    #[tokio::test]
+    async fn test_handle_healing_probe_as_target() {
+        let local_id = test_node_id();
+        let config = EnrBridgeConfig::default();
+        let mut bridge = EnrBridge::new(local_id, config);
+
+        let published = Arc::new(std::sync::Mutex::new(Vec::<(String, Vec<u8>)>::new()));
+        let published_clone = published.clone();
+        let publish_fn: PublishFn = Arc::new(move |topic, data| {
+            let mut msgs = published_clone.lock().unwrap();
+            msgs.push((topic.to_string(), data));
+            Ok(())
+        });
+        bridge.connect_publisher(publish_fn);
+
+        let initiator = NodeId::from_bytes([2u8; 32]);
+        let probe = HealingProbe {
+            probe_id: [42u8; 32],
+            initiator,
+            target: local_id, // We are the target
+            timestamp: Timestamp::now(),
+        };
+
+        bridge
+            .handle_septal_message(SeptalMessage::HealingProbe(probe))
+            .await
+            .unwrap();
+
+        // Should have published a response
+        let msgs = published.lock().unwrap();
+        assert!(!msgs.is_empty());
+        assert_eq!(msgs[0].0, EnrTopics::SEPTAL);
+
+        // Verify the response contains our node ID
+        let response = EnrMessage::from_bytes(&msgs[0].1).unwrap();
+        if let EnrMessage::Septal(SeptalMessage::HealingResponse(resp)) = response {
+            assert_eq!(resp.responder, local_id);
+            assert_eq!(resp.probe_id, [42u8; 32]);
+        } else {
+            panic!("Expected HealingResponse");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_handle_healing_response_recovery() {
+        let local_id = test_node_id();
+        let config = EnrBridgeConfig::default();
+        let bridge = EnrBridge::new(local_id, config);
+
+        let recovering_node = NodeId::from_bytes([2u8; 32]);
+
+        // First, put the node in half-open state
+        {
+            let mut gates = bridge.septal_gates.write().await;
+            let mut gate = SeptalGate::new(recovering_node);
+            gate.state = SeptalGateState::HalfOpen;
+            gates.insert(recovering_node, gate);
+        }
+
+        let response = HealingResponse {
+            probe_id: [42u8; 32],
+            responder: recovering_node,
+            state: SeptalGateState::Open,
+            timestamp: Timestamp::now(),
+        };
+
+        bridge
+            .handle_septal_message(SeptalMessage::HealingResponse(response))
+            .await
+            .unwrap();
+
+        // Node should be recovered (Open state)
+        assert!(!bridge.is_isolated(&recovering_node).await);
+        assert_eq!(
+            bridge.gate_state(&recovering_node).await,
+            SeptalGateState::Open
+        );
+    }
+
+    #[tokio::test]
+    async fn test_handle_recovery_notice() {
+        let local_id = test_node_id();
+        let config = EnrBridgeConfig::default();
+        let bridge = EnrBridge::new(local_id, config);
+
+        let recovered_node = NodeId::from_bytes([2u8; 32]);
+
+        // First isolate the node
+        for _ in 0..5 {
+            bridge.record_failure(recovered_node, "test").await;
+        }
+        assert!(bridge.is_isolated(&recovered_node).await);
+
+        // Send recovery notice
+        let notice = RecoveryNotice {
+            recovered_node,
+            timestamp: Timestamp::now(),
+        };
+
+        bridge
+            .handle_septal_message(SeptalMessage::Recovery(notice))
+            .await
+            .unwrap();
+
+        // Node should be recovered
+        assert!(!bridge.is_isolated(&recovered_node).await);
+    }
+
+    // ========================================================================
+    // Election Message Handler Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_handle_election_result() {
+        let local_id = test_node_id();
+        let config = EnrBridgeConfig::default();
+        let bridge = EnrBridge::new(local_id, config);
+
+        let winner = NodeId::from_bytes([2u8; 32]);
+
+        // Add winner to topology first
+        {
+            let mut topology = bridge.topology.write().await;
+            topology.set_topology(
+                winner,
+                crate::nexus::NexusTopology {
+                    node: winner,
+                    role: crate::nexus::NexusRole::default(),
+                    aggregated_gradient: ResourceGradient::default(),
+                    leaf_count: 0,
+                    last_election: Timestamp::now(),
+                },
+            );
+        }
+
+        let result = ElectionResult {
+            election_id: [1u8; 32],
+            winner,
+            vote_count: 10,
+            timestamp: Timestamp::now(),
+        };
+
+        bridge
+            .handle_election_message(ElectionMessage::Result(result))
+            .await
+            .unwrap();
+
+        // Winner should be promoted to Nexus role
+        let topology = bridge.topology.read().await;
+        let topo = topology.get_topology(&winner).unwrap();
+        assert_eq!(topo.role.role_type, crate::nexus::NexusRoleType::Nexus);
+    }
+
+    #[tokio::test]
+    async fn test_trigger_election() {
+        let local_id = test_node_id();
+        let config = EnrBridgeConfig::default();
+        let mut bridge = EnrBridge::new(local_id, config);
+
+        let published = Arc::new(std::sync::Mutex::new(Vec::<(String, Vec<u8>)>::new()));
+        let published_clone = published.clone();
+        let publish_fn: PublishFn = Arc::new(move |topic, data| {
+            let mut msgs = published_clone.lock().unwrap();
+            msgs.push((topic.to_string(), data));
+            Ok(())
+        });
+        bridge.connect_publisher(publish_fn);
+
+        let announcement = bridge.trigger_election().await.unwrap();
+
+        // Verify announcement details
+        assert_eq!(announcement.initiator, local_id);
+        assert_eq!(announcement.round, 1);
+
+        // Verify published message
+        let msgs = published.lock().unwrap();
+        assert!(!msgs.is_empty());
+        assert_eq!(msgs[0].0, EnrTopics::ELECTION);
+    }
+
+    // ========================================================================
+    // Message Roundtrip Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_gradient_message_roundtrip() {
+        let local_id = test_node_id();
+        let config = EnrBridgeConfig::default();
+        let mut bridge = EnrBridge::new(local_id, config);
+
+        let received = Arc::new(std::sync::Mutex::new(Vec::<Vec<u8>>::new()));
+        let received_clone = received.clone();
+        let publish_fn: PublishFn = Arc::new(move |_topic, data| {
+            let mut msgs = received_clone.lock().unwrap();
+            msgs.push(data);
+            Ok(())
+        });
+        bridge.connect_publisher(publish_fn);
+
+        // Update gradient (publishes message)
+        let gradient = ResourceGradient {
+            cpu_available: 0.42,
+            memory_available: 0.84,
+            ..Default::default()
+        };
+        bridge.update_gradient(gradient).await.unwrap();
+
+        // Get published data
+        let msgs = received.lock().unwrap();
+        assert!(!msgs.is_empty());
+
+        // Deserialize and handle as incoming message
+        let msg = EnrMessage::from_bytes(&msgs[0]).unwrap();
+        if let EnrMessage::Gradient(g) = msg {
+            assert_eq!(g.node_id, local_id);
+            assert!((g.gradient.cpu_available - 0.42).abs() < 0.001);
+        } else {
+            panic!("Expected GradientMessage");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_credit_transfer_roundtrip() {
+        let local_id = test_node_id();
+        let recipient_id = NodeId::from_bytes([2u8; 32]);
+        let config = EnrBridgeConfig::default();
+
+        // Create sender bridge
+        let mut sender = EnrBridge::new(local_id, config.clone());
+        sender.set_balance(Credits::new(1000)).await;
+
+        let received = Arc::new(std::sync::Mutex::new(Vec::<Vec<u8>>::new()));
+        let received_clone = received.clone();
+        let publish_fn: PublishFn = Arc::new(move |_topic, data| {
+            let mut msgs = received_clone.lock().unwrap();
+            msgs.push(data);
+            Ok(())
+        });
+        sender.connect_publisher(publish_fn);
+
+        // Create recipient bridge
+        let mut recipient = EnrBridge::new(recipient_id, config);
+        let publish_fn2: PublishFn = Arc::new(|_topic, _data| Ok(()));
+        recipient.connect_publisher(publish_fn2);
+
+        // Sender initiates transfer
+        let _transfer_id = sender.transfer(recipient_id, Credits::new(250)).await.unwrap();
+
+        // Verify sender balance deducted
+        assert_eq!(sender.balance().await, Credits::new(750));
+
+        // Simulate network delivery to recipient
+        let msgs = received.lock().unwrap();
+        assert!(!msgs.is_empty());
+
+        let msg = EnrMessage::from_bytes(&msgs[0]).unwrap();
+        if let EnrMessage::Credit(credit_msg) = msg {
+            recipient.handle_credit_message(credit_msg).await.unwrap();
+        } else {
+            panic!("Expected CreditMessage");
+        }
+
+        // Verify recipient balance credited
+        assert_eq!(recipient.balance().await, Credits::new(250));
+    }
+
+    // ========================================================================
+    // Message Expiration Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_expired_gradient_message_rejected() {
+        let local_id = test_node_id();
+        let mut config = EnrBridgeConfig::default();
+        config.max_message_age = Duration::from_secs(60);
+        let bridge = EnrBridge::new(local_id, config);
+
+        let sender = NodeId::from_bytes([2u8; 32]);
+
+        // Create a message with old timestamp (2 minutes ago)
+        let old_timestamp = Timestamp::new(Timestamp::now().millis - 120_000);
+
+        let gradient = GradientMessage {
+            node_id: sender,
+            gradient: GradientPayload::from(&ResourceGradient::default()),
+            timestamp: old_timestamp,
+            signature: Signature::empty(),
+        };
+
+        let msg = EnrMessage::Gradient(gradient);
+        let data = msg.to_bytes().unwrap();
+
+        // Should reject expired message
+        let result = bridge.handle_message(EnrTopics::GRADIENT, &data).await;
+        assert!(matches!(result, Err(BridgeError::MessageExpired)));
+    }
+
+    #[tokio::test]
+    async fn test_fresh_gradient_message_accepted() {
+        let local_id = test_node_id();
+        let mut config = EnrBridgeConfig::default();
+        config.max_message_age = Duration::from_secs(60);
+        let bridge = EnrBridge::new(local_id, config);
+
+        let sender = NodeId::from_bytes([2u8; 32]);
+
+        let gradient = GradientMessage {
+            node_id: sender,
+            gradient: GradientPayload {
+                cpu_available: 0.5,
+                ..Default::default()
+            },
+            timestamp: Timestamp::now(),
+            signature: Signature::empty(),
+        };
+
+        let msg = EnrMessage::Gradient(gradient);
+        let data = msg.to_bytes().unwrap();
+
+        // Should accept fresh message
+        let result = bridge.handle_message(EnrTopics::GRADIENT, &data).await;
+        assert!(result.is_ok());
+
+        // Verify gradient was stored
+        let gradients = bridge.gradients.read().await;
+        assert!(gradients.contains_key(&sender));
+    }
+
+    // ========================================================================
+    // Edge Case Tests
+    // ========================================================================
+
+    #[tokio::test]
+    async fn test_publish_without_connection() {
+        let local_id = test_node_id();
+        let config = EnrBridgeConfig::default();
+        let bridge = EnrBridge::new(local_id, config);
+
+        let msg = EnrMessage::Gradient(GradientMessage {
+            node_id: local_id,
+            gradient: GradientPayload::from(&ResourceGradient::default()),
+            timestamp: Timestamp::now(),
+            signature: Signature::empty(),
+        });
+
+        let result = bridge.publish(msg);
+        assert!(matches!(result, Err(BridgeError::NotConnected)));
+    }
+
+    #[tokio::test]
+    async fn test_start_broadcast_without_connection() {
+        let local_id = test_node_id();
+        let config = EnrBridgeConfig::default();
+        let mut bridge = EnrBridge::new(local_id, config);
+
+        let result = bridge.start_gradient_broadcast().await;
+        assert!(matches!(result, Err(BridgeError::NotConnected)));
+    }
+
+    #[tokio::test]
+    async fn test_multiple_transfers_balance_consistency() {
+        let local_id = test_node_id();
+        let config = EnrBridgeConfig::default();
+        let mut bridge = EnrBridge::new(local_id, config);
+
+        let publish_fn: PublishFn = Arc::new(|_topic, _data| Ok(()));
+        bridge.connect_publisher(publish_fn);
+        bridge.set_balance(Credits::new(1000)).await;
+
+        let recipients: Vec<NodeId> = (2..=5)
+            .map(|i| NodeId::from_bytes([i as u8; 32]))
+            .collect();
+
+        // Make multiple transfers
+        for recipient in &recipients {
+            bridge.transfer(*recipient, Credits::new(100)).await.unwrap();
+        }
+
+        // Balance should be consistent
+        assert_eq!(bridge.balance().await, Credits::new(600)); // 1000 - 4*100
+
+        // Pending transfers should exist
+        let pending = bridge.pending_transfers.read().await;
+        assert_eq!(pending.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_invalid_message_deserialization() {
+        let local_id = test_node_id();
+        let config = EnrBridgeConfig::default();
+        let bridge = EnrBridge::new(local_id, config);
+
+        // Random garbage data
+        let invalid_data = vec![0xFF, 0xFE, 0x00, 0x01, 0x02];
+
+        let result = bridge.handle_message(EnrTopics::GRADIENT, &invalid_data).await;
+        assert!(matches!(result, Err(BridgeError::Deserialization(_))));
+    }
+
+    #[test]
+    fn test_transfer_id_uniqueness() {
+        let from = NodeId::from_bytes([1u8; 32]);
+        let to = NodeId::from_bytes([2u8; 32]);
+
+        // Same parameters, same nonce -> same ID
+        let id1 = TransferId::from_transfer(&from, &to, 100, 12345);
+        let id2 = TransferId::from_transfer(&from, &to, 100, 12345);
+        assert_eq!(id1, id2);
+
+        // Different nonce -> different ID
+        let id3 = TransferId::from_transfer(&from, &to, 100, 12346);
+        assert_ne!(id1, id3);
+
+        // Different amount -> different ID
+        let id4 = TransferId::from_transfer(&from, &to, 101, 12345);
+        assert_ne!(id1, id4);
+
+        // Different sender -> different ID
+        let from2 = NodeId::from_bytes([3u8; 32]);
+        let id5 = TransferId::from_transfer(&from2, &to, 100, 12345);
+        assert_ne!(id1, id5);
+    }
 }
