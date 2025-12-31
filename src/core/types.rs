@@ -216,7 +216,7 @@ impl ReservationId {
 }
 
 /// CreditTransfer - from dol/core.dol line 125
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreditTransfer {
     pub from: AccountId,
     pub to: AccountId,
