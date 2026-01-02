@@ -84,14 +84,11 @@ pub fn calculate_fixed_price(
 }
 
 /// Calculate dynamic price with entropy adjustment
-pub fn calculate_dynamic_price(
-    config: &DynamicPriceConfig,
-    entropy: &EntropyAccount,
-) -> Credits {
+pub fn calculate_dynamic_price(config: &DynamicPriceConfig, entropy: &EntropyAccount) -> Credits {
     use crate::entropy::entropy_price_multiplier;
 
-    let multiplier = entropy_price_multiplier(entropy)
-        .clamp(config.min_multiplier, config.max_multiplier);
+    let multiplier =
+        entropy_price_multiplier(entropy).clamp(config.min_multiplier, config.max_multiplier);
 
     let adjusted = (config.base_price.amount as f64 * multiplier) as u64;
     Credits::new(adjusted)
@@ -188,8 +185,10 @@ impl Pricer {
     pub fn quote_dynamic(&self, entropy: &EntropyAccount) -> PriceQuote {
         use crate::entropy::entropy_price_multiplier;
 
-        let multiplier = entropy_price_multiplier(entropy)
-            .clamp(self.dynamic_config.min_multiplier, self.dynamic_config.max_multiplier);
+        let multiplier = entropy_price_multiplier(entropy).clamp(
+            self.dynamic_config.min_multiplier,
+            self.dynamic_config.max_multiplier,
+        );
 
         PriceQuote::dynamic(self.dynamic_config.base_price, multiplier)
     }

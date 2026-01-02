@@ -426,11 +426,7 @@ impl EnrBridge {
     }
 
     /// Transfer credits to another node
-    pub async fn transfer(
-        &self,
-        to: NodeId,
-        amount: Credits,
-    ) -> Result<TransferId, TransferError> {
+    pub async fn transfer(&self, to: NodeId, amount: Credits) -> Result<TransferId, TransferError> {
         // Validate transfer
         if amount.is_zero() {
             return Err(TransferError::ZeroAmount);
@@ -477,7 +473,8 @@ impl EnrBridge {
 
         // Broadcast transfer
         let message = EnrMessage::Credit(CreditMessage::Transfer(transfer));
-        self.publish(message).map_err(|_| TransferError::Cancelled)?;
+        self.publish(message)
+            .map_err(|_| TransferError::Cancelled)?;
 
         Ok(transfer_id)
     }
@@ -529,7 +526,10 @@ impl EnrBridge {
                 balances.insert(sync.node_id, Credits::new(sync.balance));
                 Ok(())
             }
-            CreditMessage::BalanceQuery { requester: _, target } => {
+            CreditMessage::BalanceQuery {
+                requester: _,
+                target,
+            } => {
                 if target == self.local_id {
                     let balance = self.local_balance.read().await;
                     let response = CreditMessage::BalanceResponse {
@@ -557,7 +557,9 @@ impl EnrBridge {
     pub async fn record_failure(&self, node_id: NodeId, reason: &str) {
         {
             let mut gates = self.septal_gates.write().await;
-            let gate = gates.entry(node_id).or_insert_with(|| SeptalGate::new(node_id));
+            let gate = gates
+                .entry(node_id)
+                .or_insert_with(|| SeptalGate::new(node_id));
             gate.record_failure();
 
             // Check if should trip
@@ -1385,7 +1387,10 @@ mod tests {
         recipient.connect_publisher(publish_fn2);
 
         // Sender initiates transfer
-        let _transfer_id = sender.transfer(recipient_id, Credits::new(250)).await.unwrap();
+        let _transfer_id = sender
+            .transfer(recipient_id, Credits::new(250))
+            .await
+            .unwrap();
 
         // Verify sender balance deducted
         assert_eq!(sender.balance().await, Credits::new(750));
@@ -1508,13 +1513,14 @@ mod tests {
         bridge.connect_publisher(publish_fn);
         bridge.set_balance(Credits::new(1000)).await;
 
-        let recipients: Vec<NodeId> = (2..=5)
-            .map(|i| NodeId::from_bytes([i as u8; 32]))
-            .collect();
+        let recipients: Vec<NodeId> = (2..=5).map(|i| NodeId::from_bytes([i as u8; 32])).collect();
 
         // Make multiple transfers
         for recipient in &recipients {
-            bridge.transfer(*recipient, Credits::new(100)).await.unwrap();
+            bridge
+                .transfer(*recipient, Credits::new(100))
+                .await
+                .unwrap();
         }
 
         // Balance should be consistent
@@ -1534,7 +1540,9 @@ mod tests {
         // Random garbage data
         let invalid_data = vec![0xFF, 0xFE, 0x00, 0x01, 0x02];
 
-        let result = bridge.handle_message(EnrTopics::GRADIENT, &invalid_data).await;
+        let result = bridge
+            .handle_message(EnrTopics::GRADIENT, &invalid_data)
+            .await;
         assert!(matches!(result, Err(BridgeError::Deserialization(_))));
     }
 

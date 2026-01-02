@@ -39,8 +39,10 @@ pub trait CreditHandler: Send + Sync {
     async fn handle_transfer(&self, transfer: CreditTransfer) -> Result<(), BridgeError>;
 
     /// Handle transfer confirmation
-    async fn handle_confirmation(&self, confirmation: TransferConfirmation)
-        -> Result<(), BridgeError>;
+    async fn handle_confirmation(
+        &self,
+        confirmation: TransferConfirmation,
+    ) -> Result<(), BridgeError>;
 
     /// Handle credit state sync
     async fn handle_state_sync(&self, sync: CreditStateSync) -> Result<(), BridgeError>;

@@ -40,7 +40,10 @@ impl CreditState {
         if self.can_transition_to(next) {
             Ok(next)
         } else {
-            Err(StateError::InvalidTransition { from: self, to: next })
+            Err(StateError::InvalidTransition {
+                from: self,
+                to: next,
+            })
         }
     }
 
