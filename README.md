@@ -7,6 +7,12 @@
 
 > *"The network is not pipes. It is a living market."*
 
+# Univrs Identity
+
+> [!CAUTION]
+> This project is a research demonstrator. It is in early development and may change significantly. Using permissive Univrs tools in your repository requires careful attention to security considerations and careful human supervision, and even then things can still go wrong. Use it with caution, and at your own risk. See [Disclaimer](#disclaimer).
+
+
 ---
 
 ## Table of Contents
@@ -3439,7 +3445,16 @@ Week 8: WASM Integration
 
 ---
 
-*"The network is not pipes. It is a living market."*
+## Disclaimer
 
+> [!IMPORTANT] > **This is an experimental system. _We break things frequently_.**
+
+- Not accepting contributions yet (but we plan to!)
+- No stability guarantees
+- Pin commits if you need consistency
+- This is a learning resource, not production software
+- **No support provided** - See [SUPPORT.md](SUPPORT.md)
+
+*"The network is not pipes. It is a living market."*
 *Le réseau est Bondieu.* 🍄
 

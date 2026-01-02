@@ -89,7 +89,11 @@ impl Decomposer {
     }
 
     /// Start decomposition for a failed node
-    pub fn start_decomposition(&mut self, node: NodeId, frozen_credits: Credits) -> &DecompositionState {
+    pub fn start_decomposition(
+        &mut self,
+        node: NodeId,
+        frozen_credits: Credits,
+    ) -> &DecompositionState {
         let state = DecompositionState::new(node, frozen_credits);
         self.states.insert(node, state);
         self.states.get(&node).unwrap()
@@ -131,14 +135,16 @@ pub fn decompose_failed_node<C: DecompositionContext>(
 
     // Step 2: Freeze credits
     let frozen_credits = context.freeze_node_credits(&node);
-    events.push(
-        RevivalEvent::node_failure(node, frozen_credits).with_metadata("phase", "freeze"),
-    );
+    events.push(RevivalEvent::node_failure(node, frozen_credits).with_metadata("phase", "freeze"));
 
     // Step 3: Release held reservations
     let reservations = context.get_held_reservations(&node);
     for (reservation_id, amount, _consumed) in reservations {
-        events.push(RevivalEvent::reservation_expired(node, amount, reservation_id));
+        events.push(RevivalEvent::reservation_expired(
+            node,
+            amount,
+            reservation_id,
+        ));
     }
 
     // Step 4: Reclaim stored state
@@ -153,9 +159,8 @@ pub fn decompose_failed_node<C: DecompositionContext>(
     // Step 5: Update topology (done by caller)
 
     // Step 6: Final event
-    events.push(
-        RevivalEvent::node_failure(node, frozen_credits).with_metadata("phase", "complete"),
-    );
+    events
+        .push(RevivalEvent::node_failure(node, frozen_credits).with_metadata("phase", "complete"));
 
     events
 }

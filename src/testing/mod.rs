@@ -298,10 +298,13 @@ mod tests {
 
         // Fail the only nexus
         let nexus_id = cluster.nodes[0].id;
-        cluster.inject_chaos(ChaosEvent::new(ChaosScenario::NexusFailure).with_nodes(vec![nexus_id]));
+        cluster
+            .inject_chaos(ChaosEvent::new(ChaosScenario::NexusFailure).with_nodes(vec![nexus_id]));
 
         // Now we should have a violation
         let violations = cluster.check_invariants();
-        assert!(violations.iter().any(|v| matches!(v, InvariantViolation::NoAliveNexus)));
+        assert!(violations
+            .iter()
+            .any(|v| matches!(v, InvariantViolation::NoAliveNexus)));
     }
 }

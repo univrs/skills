@@ -6,7 +6,10 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum EnrError {
     #[error("Insufficient credits: required {required}, available {available}")]
-    InsufficientCredits { required: Credits, available: Credits },
+    InsufficientCredits {
+        required: Credits,
+        available: Credits,
+    },
 
     #[error("Reservation not found: {0:?}")]
     ReservationNotFound(ReservationId),

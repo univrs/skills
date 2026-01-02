@@ -2,7 +2,7 @@
 //!
 //! Implements septal gate from dol/septal.dol
 
-use crate::core::{NodeId, Timestamp, Duration};
+use crate::core::{Duration, NodeId, Timestamp};
 use serde::{Deserialize, Serialize};
 
 /// Constants from dol/septal.dol lines 36-43

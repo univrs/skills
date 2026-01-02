@@ -105,7 +105,11 @@ pub struct RedistributionPlan {
 
 impl RedistributionPlan {
     pub fn total_distributed(&self) -> Credits {
-        let maintenance: u64 = self.maintenance_recipients.iter().map(|(_, c)| c.amount).sum();
+        let maintenance: u64 = self
+            .maintenance_recipients
+            .iter()
+            .map(|(_, c)| c.amount)
+            .sum();
         let subsidy: u64 = self.subsidy_recipients.iter().map(|(_, c)| c.amount).sum();
         let support: u64 = self.support_recipients.iter().map(|(_, c)| c.amount).sum();
 

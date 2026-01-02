@@ -32,7 +32,9 @@ impl WoroninBody {
 
     /// Duration since activation
     pub fn duration_active(&self) -> u64 {
-        Timestamp::now().millis.saturating_sub(self.activated_at.millis)
+        Timestamp::now()
+            .millis
+            .saturating_sub(self.activated_at.millis)
     }
 }
 

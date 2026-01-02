@@ -110,21 +110,29 @@ impl Duration {
     }
 
     pub fn minutes(m: u64) -> Self {
-        Self { millis: m * 60 * 1000 }
+        Self {
+            millis: m * 60 * 1000,
+        }
     }
 
     pub fn hours(h: u64) -> Self {
-        Self { millis: h * 60 * 60 * 1000 }
+        Self {
+            millis: h * 60 * 60 * 1000,
+        }
     }
 
     pub fn days(d: u64) -> Self {
-        Self { millis: d * 24 * 60 * 60 * 1000 }
+        Self {
+            millis: d * 24 * 60 * 60 * 1000,
+        }
     }
 }
 
 /// Credits - from dol/core.dol line 95
 /// Fundamental unit of value, conserved across transfers
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
+)]
 pub struct Credits {
     pub amount: u64,
 }
@@ -144,12 +152,16 @@ impl Credits {
 
     /// provides add() from dol/core.dol line 112
     pub fn checked_add(self, other: Self) -> Option<Self> {
-        self.amount.checked_add(other.amount).map(|a| Self { amount: a })
+        self.amount
+            .checked_add(other.amount)
+            .map(|a| Self { amount: a })
     }
 
     /// provides sub() from dol/core.dol line 116
     pub fn checked_sub(self, other: Self) -> Option<Self> {
-        self.amount.checked_sub(other.amount).map(|a| Self { amount: a })
+        self.amount
+            .checked_sub(other.amount)
+            .map(|a| Self { amount: a })
     }
 
     pub fn saturating_add(self, other: Self) -> Self {
@@ -216,7 +228,7 @@ impl ReservationId {
 }
 
 /// CreditTransfer - from dol/core.dol line 125
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreditTransfer {
     pub from: AccountId,
     pub to: AccountId,

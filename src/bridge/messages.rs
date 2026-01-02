@@ -226,14 +226,8 @@ pub enum CreditMessage {
     Transfer(CreditTransfer),
     Confirmation(TransferConfirmation),
     StateSync(CreditStateSync),
-    BalanceQuery {
-        requester: NodeId,
-        target: NodeId,
-    },
-    BalanceResponse {
-        node_id: NodeId,
-        balance: u64,
-    },
+    BalanceQuery { requester: NodeId, target: NodeId },
+    BalanceResponse { node_id: NodeId, balance: u64 },
 }
 
 // ============================================================================
@@ -384,14 +378,13 @@ mod tests {
         });
         assert_eq!(gradient_msg.topic(), "/enr/gradient/1.0");
 
-        let election_msg = EnrMessage::Election(ElectionMessage::Announcement(
-            ElectionAnnouncement {
+        let election_msg =
+            EnrMessage::Election(ElectionMessage::Announcement(ElectionAnnouncement {
                 election_id: [0u8; 32],
                 initiator: node,
                 timestamp: Timestamp::now(),
                 round: 1,
-            },
-        ));
+            }));
         assert_eq!(election_msg.topic(), "/enr/election/1.0");
     }
 

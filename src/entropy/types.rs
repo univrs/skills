@@ -73,7 +73,8 @@ impl Default for EntropyWeights {
 impl EntropyWeights {
     /// Constraint: weights_sum_to_one from dol/core.dol line 213
     pub fn is_valid(&self) -> bool {
-        let sum = self.network_weight + self.compute_weight + self.storage_weight + self.temporal_weight;
+        let sum =
+            self.network_weight + self.compute_weight + self.storage_weight + self.temporal_weight;
         (sum - 1.0).abs() < 0.001
     }
 

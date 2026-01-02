@@ -71,6 +71,6 @@ pub mod bridge;
 
 // Re-export core types for convenience
 pub use core::{
-    AccountId, AccountType, Credits, CreditReservation, CreditTransfer, Duration, EnrError,
-    NodeId, ReservationId, Timestamp,
+    AccountId, AccountType, CreditReservation, CreditTransfer, Credits, Duration, EnrError, NodeId,
+    ReservationId, Timestamp,
 };
